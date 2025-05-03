@@ -323,13 +323,13 @@ class FTCInfo(Cog):
 
         for team in team_data:
             button = discord.ui.Button(label = f"Team {team['number']}", style = discord.ButtonStyle.primary)
-            button.callback = self.create_team_callback(ctx, team['number'])
+            button.callback = self.create_team_callback(ctx, team['number'], view)
             view.add_item(button)
 
         if manyteams:
             e.description = "More than 5 teams were found. If the team you want is not in this list, please refine your search"
         e.set_footer(text="Team information from FTCScout")
-        message = await ctx.reply(embed = e, view = view, ephemeral = True, mention_author = False)
+        message = await ctx.reply(embed = e, view = view, mention_author = False)
 
         await asyncio.sleep(180)  # 3 minutes
         for item in view.children:
@@ -516,12 +516,19 @@ class FTCInfo(Cog):
     """
 
 
-    def create_team_callback(self, ctx, team_num):
+    def create_team_callback(self, ctx: DozerContext, team_num, view):
         """Creates a callback for the search interaction buttons"""
         async def callback(interaction):
+            for item in view.children:
+                item.disabled = True
             await self.team.callback(self, ctx, team_num)
             await interaction.response.defer()
-            await ctx.message.edit.view(view = discord.ui.View()) # delete buttons
+            try:
+                await interaction.message.edit(view=view)  # delete buttons
+            except discord.errors.NotFound:
+                return
+
+
 
         return callback
 
