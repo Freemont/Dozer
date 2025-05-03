@@ -521,6 +521,7 @@ class FTCInfo(Cog):
         async def callback(interaction):
             await self.team.callback(self, ctx, team_num)
             await interaction.response.defer()
+            await ctx.message.edit.view(view = discord.ui.View()) # delete buttons
 
         return callback
 
