@@ -1,5 +1,6 @@
 """Given an arbitrary RSS feed, get new posts from it"""
 import datetime
+import html
 import re
 import xml.etree.ElementTree
 
@@ -148,7 +149,7 @@ class RSSSource(Source):
         """Given a dictionary of data, generate a string using that data"""
         return f"New Post from {self.full_name} from {data['author']}:\n" \
                f"{data['title']}\n" \
-               f">>> {data['description']}\n" \
+               f">>> {html.unescape(data['description'])}\n" \
                f"Read more at {data['url']}"
 
 
