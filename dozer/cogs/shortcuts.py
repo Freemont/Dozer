@@ -1,4 +1,9 @@
 """Adds simple text-shortcuts to the bot"""
+import codecs
+import csv
+import datetime
+import io
+from io import BufferedIOBase, StringIO
 
 import discord
 from discord.ext import commands
@@ -127,6 +132,30 @@ class Shortcuts(Cog):
     list.example_usage = """
     `{prefix}shortcuts list - lists all shortcuts
     """
+
+    @guild_only()
+    @shortcuts.command()
+    async def csv(self, ctx):
+        """Export all shortcuts for the server as a CSV."""
+        settings: ShortcutSetting = await self.settings_cache.query_one(guild_id=ctx.guild.id)
+
+        ents: List[ShortcutEntry] = await ShortcutEntry.get_by(guild_id=ctx.guild.id)
+
+        if not ents:
+            await ctx.send("No shortcuts for this server!")
+            return
+
+        stringfile = io.StringIO()
+        csvwriter = csv.writer(stringfile)
+        for i, e in enumerate(ents):
+            csvwriter.writerow([settings.prefix + e.name, e.value])
+
+
+        await ctx.send(file=discord.File(StringIO(stringfile.getvalue()),f"shortcuts-{ctx.guild.id}-{datetime.date.today().isoformat()}.csv"))
+
+    csv.example_usage = """
+        `{prefix}shortcuts csv - exports all shortcuts as a csv
+        """
 
     @Cog.listener()
     async def on_message(self, msg):
