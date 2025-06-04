@@ -6,8 +6,9 @@ import io
 from io import BufferedIOBase, StringIO
 
 import discord
+from discord import Forbidden
 from discord.ext import commands
-from discord.ext.commands import BadArgument, guild_only, has_permissions
+from discord.ext.commands import BadArgument, guild_only, has_permissions, CommandInvokeError
 
 from dozer.context import DozerContext
 from ._utils import *
@@ -107,7 +108,7 @@ class Shortcuts(Cog):
 
     @guild_only()
     @shortcuts.command()
-    async def list(self, ctx):
+    async def list(self, ctx: DozerContext):
         """Lists all shortcuts for the server."""
         settings: ShortcutSetting = await self.settings_cache.query_one(guild_id=ctx.guild.id)
 
@@ -117,17 +118,26 @@ class Shortcuts(Cog):
             await ctx.send("No shortcuts for this server!")
             return
 
+
         embed = None
         for i, e in enumerate(ents):
             if i % 20 == 0:
                 if embed is not None:
-                    await ctx.send(embed=embed)
+                    try:
+                        await ctx.author.send(embed=embed)
+                    except Forbidden:
+                        return await ctx.send("Unable to DM you")
                 embed = discord.Embed()
                 embed.title = "Shortcuts for this server"
             embed.add_field(name=settings.prefix + e.name, value=e.value[:1024])
 
         if embed.fields:
-            await ctx.send(embed=embed)
+            try:
+                await ctx.author.send(embed=embed)
+            except Forbidden:
+                return await ctx.send("Unable to DM you")
+
+        return await ctx.send(f"DMed you {len(ents)} shortcuts")
 
     list.example_usage = """
     `{prefix}shortcuts list - lists all shortcuts
