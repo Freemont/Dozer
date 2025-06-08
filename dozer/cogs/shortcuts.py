@@ -45,7 +45,6 @@ class ShortcutCategorySelect(discord.ui.Select):
         """Handle category selection"""
         selected_category = self.values[0]
 
-        # Get shortcuts for the selected category
         shortcuts = await ShortcutEntry.get_by(guild_id=self.guild_id, category=selected_category)
         settings = await self.settings_cache.query_one(guild_id=self.guild_id)
 
@@ -58,7 +57,6 @@ class ShortcutCategorySelect(discord.ui.Select):
             await interaction.response.edit_message(embed=embed, view=None)
             return
 
-        # Create paginated view with configured page size
         page_size = settings.page_size if settings else 10
         paginator = ShortcutPaginator(shortcuts, selected_category, settings.prefix, self.guild_id, self.settings_cache, self.cache, page_size)
         embed = paginator.create_embed(0)
@@ -81,10 +79,8 @@ class ShortcutPaginator(discord.ui.View):
         self.current_page = 0
         self.max_pages = math.ceil(len(shortcuts) / per_page)
 
-        # Add back button to return to category selection
         self.add_item(ShortcutBackButton(guild_id, settings_cache, cache))
 
-        # Add pagination buttons if needed
         if self.max_pages > 1:
             self.add_item(ShortcutPreviousButton())
             self.add_item(ShortcutNextButton())
@@ -101,7 +97,6 @@ class ShortcutPaginator(discord.ui.View):
         )
 
         for shortcut in page_shortcuts:
-            # Truncate long values for display
             value = shortcut.value
             if len(value) > 1024:
                 value = value[:1021] + "..."
@@ -136,7 +131,7 @@ class ShortcutBackButton(discord.ui.Button):
 
     async def callback(self, interaction: discord.Interaction):
         """Return to category selection"""
-        # Get all categories
+    
         shortcuts = await ShortcutEntry.get_by(guild_id=self.guild_id)
         categories = list(set(shortcut.category or "General" for shortcut in shortcuts))
         categories.sort()
@@ -150,7 +145,6 @@ class ShortcutBackButton(discord.ui.Button):
             await interaction.response.edit_message(embed=embed, view=None)
             return
 
-        # Create new category selection view
         view = ShortcutListView(self.guild_id, self.settings_cache, self.cache)
         await view.setup_categories()
         embed = discord.Embed(
@@ -232,20 +226,17 @@ class Shortcuts(Cog):
         """Migrate existing shortcuts to have default category if they don't have one"""
         try:
             async with db.Pool.acquire() as conn:
-                # Add category column if it doesn't exist
                 await conn.execute("""
                     ALTER TABLE shortcuts
                     ADD COLUMN IF NOT EXISTS category varchar DEFAULT 'General'
                 """)
 
-                # Update existing shortcuts without categories
                 await conn.execute("""
                     UPDATE shortcuts
                     SET category = 'General'
                     WHERE category IS NULL
                 """)
 
-                # Add page_size column to settings if it doesn't exist
                 await conn.execute("""
                     ALTER TABLE shortcut_settings
                     ADD COLUMN IF NOT EXISTS page_size integer DEFAULT 10
@@ -315,8 +306,8 @@ class Shortcuts(Cog):
     @guild_only()
     @has_permissions(manage_messages=True)
     @shortcuts.command(aliases=["add"])
-    async def set(self, ctx, cmd_name, *, cmd_msg):
-        """Set the message to be sent for a given shortcut name. Optionally specify category with --category."""
+    async def set(self, ctx, cmd_name, cmd_msg, *, category="General"):
+        """Set the message to be sent for a given shortcut name with an optional category parameter."""
         settings: ShortcutSetting = await self.settings_cache.query_one(guild_id=ctx.guild.id)
         if settings is None:
             raise BadArgument("Set a prefix first!")
@@ -325,16 +316,17 @@ class Shortcuts(Cog):
         if not cmd_msg:
             raise BadArgument("can't have null message")
 
-        # Parse category from message if specified
-        category = "General"
-        if "--category" in cmd_msg:
-            parts = cmd_msg.split("--category", 1)
-            if len(parts) == 2:
-                cmd_msg = parts[0].strip()
-                category_part = parts[1].strip()
-                if category_part:
-                    category = category_part.split()[0]  # Take first word after --category
+        if len(category) > 50:
+            raise BadArgument("Category names must be 50 characters or less.")
 
+        if not category.replace(" ", "").replace("-", "").replace("_", "").isalnum():
+            raise BadArgument("Category names can only contain letters, numbers, spaces, hyphens, and underscores.")
+
+        existing_shortcuts = await ShortcutEntry.get_by(guild_id=ctx.guild.id)
+        existing_categories = set(shortcut.category or "General" for shortcut in existing_shortcuts)
+        
+        is_new_category = category not in existing_categories
+        
         ent: ShortcutEntry = await self.cache.query_one(guild_id=ctx.guild.id, name=cmd_name)
 
         if ent:
@@ -346,11 +338,14 @@ class Shortcuts(Cog):
         await ent.update_or_add()
         self.cache.invalidate_entry(guild_id=ctx.guild.id, name=cmd_name)
 
-        await ctx.send(f"Updated command successfully in category '{category}'.")
+        if is_new_category:
+            await ctx.send(f"Created new category '{category}' and updated command successfully.")
+        else:
+            await ctx.send(f"Updated command successfully in category '{category}'.")
 
     set.example_usage = """
-    `{prefix}shortcuts set hello Hello, World!!!!` - set !hello for the server in General category
-    `{prefix}shortcuts set joke Why did the chicken cross the road? --category Fun` - set !joke in Fun category
+    `{prefix}shortcuts set hello "Hello, World!!!!"` - set !hello for the server in General category
+    `{prefix}shortcuts set joke "Why did the chicken cross the road?" Fun` - set !joke in Fun category (creates Fun category if it doesn't exist)
     """
 
     @guild_only()
@@ -374,7 +369,7 @@ class Shortcuts(Cog):
     @guild_only()
     @shortcuts.command()
     async def list(self, ctx: DozerContext):
-        """Lists all shortcuts for the server using an interactive menu."""
+        """Lists all shortcuts for the server using an interactive menu (sent as a DM)."""
         settings: ShortcutSetting = await self.settings_cache.query_one(guild_id=ctx.guild.id)
 
         if settings is None:
@@ -386,7 +381,6 @@ class Shortcuts(Cog):
             await ctx.send("No shortcuts for this server!")
             return
 
-        # Create the interactive view
         view = ShortcutListView(ctx.guild.id, self.settings_cache, self.cache)
         await view.setup_categories()
 
@@ -397,18 +391,22 @@ class Shortcuts(Cog):
         )
         embed.set_footer(text=f"{len(ents)} total shortcuts")
 
-        await ctx.send(embed=embed, view=view)
+        try:
+            await ctx.author.send(embed=embed, view=view)
+            await ctx.send("I've sent you a DM with the shortcuts list!")
+        except discord.Forbidden:
+            await ctx.send("I couldn't send you a DM. Please check your privacy settings and try again.")
 
     list.example_usage = """
-    `{prefix}shortcuts list - shows interactive menu to browse shortcuts by category
+    `{prefix}shortcuts list` - sends you a DM with an interactive menu to browse shortcuts by category
     """
 
     @guild_only()
     @has_permissions(manage_messages=True)
-    @shortcuts.command(aliases=["movecategory", "changecategory"])
-    async def setcategory(self, ctx, cmd_name: str, category: str):
+    @shortcuts.command(aliases=["movecategory", "changecategory", "setcategory"])
+    async def move(self, ctx, cmd_name: str, category: str):
         """Move a shortcut to a different category."""
-        # Validate category name
+
         if len(category) > 50:
             raise BadArgument("Category names must be 50 characters or less.")
 
@@ -418,7 +416,6 @@ class Shortcuts(Cog):
         ent: ShortcutEntry = await self.cache.query_one(guild_id=ctx.guild.id, name=cmd_name)
 
         if not ent:
-            # Show available shortcuts
             all_ents = await ShortcutEntry.get_by(guild_id=ctx.guild.id)
             if all_ents:
                 available = ", ".join([f"`{e.name}`" for e in all_ents[:10]])
@@ -446,7 +443,7 @@ class Shortcuts(Cog):
         )
         await ctx.send(embed=embed)
 
-    setcategory.example_usage = """
+    move.example_usage = """
     `{prefix}shortcuts setcategory hello Fun` - moves the 'hello' shortcut to the 'Fun' category
     `{prefix}shortcuts movecategory joke Humor` - moves the 'joke' shortcut to the 'Humor' category
     """
@@ -461,7 +458,6 @@ class Shortcuts(Cog):
             await ctx.send("No shortcuts for this server!")
             return
 
-        # Get unique categories and count shortcuts in each
         category_counts = {}
         for ent in ents:
             category = ent.category or "General"
@@ -491,7 +487,6 @@ class Shortcuts(Cog):
     @shortcuts.command()
     async def addcategory(self, ctx, category_name: str, *, description: str = None):
         """Create a new category. Categories are created automatically when shortcuts are added to them."""
-        # Check if category already exists
         ents: List[ShortcutEntry] = await ShortcutEntry.get_by(guild_id=ctx.guild.id)
         existing_categories = set(ent.category or "General" for ent in ents)
 
@@ -499,8 +494,7 @@ class Shortcuts(Cog):
             await ctx.send(f"Category '{category_name}' already exists!")
             return
 
-        # Categories are created implicitly when shortcuts are added to them
-        # For now, we'll just confirm the category name is valid
+    
         if len(category_name) > 50:
             raise BadArgument("Category names must be 50 characters or less.")
 
@@ -510,7 +504,7 @@ class Shortcuts(Cog):
         embed = discord.Embed(
             title="Category Ready",
             description=f"Category '{category_name}' is ready to use! Add shortcuts to it using:\n"
-                       f"`{ctx.prefix}shortcuts set <shortcut_name> <message> --category {category_name}`",
+                       f"`{ctx.prefix}shortcuts set <shortcut_name> <message> {category_name}`",
             color=discord.Color.green()
         )
         if description:
@@ -531,7 +525,6 @@ class Shortcuts(Cog):
         if category_name.lower() == "general":
             raise BadArgument("Cannot delete the 'General' category.")
 
-        # Get all shortcuts in this category
         ents: List[ShortcutEntry] = await ShortcutEntry.get_by(guild_id=ctx.guild.id, category=category_name)
 
         if not ents:
@@ -554,7 +547,6 @@ class Shortcuts(Cog):
             await ctx.send(embed=embed)
             return
 
-        # Move all shortcuts to General category
         for ent in ents:
             ent.category = "General"
             await ent.update_or_add()
@@ -573,228 +565,6 @@ class Shortcuts(Cog):
     `{prefix}shortcuts deletecategory Fun CONFIRM` - deletes the Fun category and moves shortcuts to General
     """
 
-    # Slash Commands for Category Management
-    @app_commands.command(name="shortcut-add-category", description="Create a new shortcut category")
-    @app_commands.describe(
-        category_name="Name of the category to create",
-        description="Optional description for the category"
-    )
-    @app_commands.guild_only()
-    async def slash_addcategory(self, interaction: discord.Interaction, category_name: str, description: str = None):
-        """Slash command to create a new category."""
-        # Check permissions
-        if not interaction.user.guild_permissions.manage_messages:
-            await interaction.response.send_message("❌ You need 'Manage Messages' permission to use this command.", 
-                                                       ephemeral=True)
-            return
-
-        # Check if category already exists
-        ents: List[ShortcutEntry] = await ShortcutEntry.get_by(guild_id=interaction.guild.id)
-        existing_categories = set(ent.category or "General" for ent in ents)
-
-        if category_name in existing_categories:
-            await interaction.response.send_message(f"❌ Category '{category_name}' already exists!", ephemeral=True)
-            return
-
-        # Validate category name
-        if len(category_name) > 50:
-            await interaction.response.send_message("❌ Category names must be 50 characters or less.", ephemeral=True)
-            return
-
-        if not category_name.replace(" ", "").replace("-", "").replace("_", "").isalnum():
-            await interaction.response.send_message(
-                "❌ Category names can only contain letters, numbers, spaces, hyphens, and underscores.", 
-                ephemeral=True
-            )
-            return
-
-        embed = discord.Embed(
-            title="✅ Category Ready",
-            description=f"Category '{category_name}' is ready to use! Add shortcuts to it using the `/shortcut-set` command.",
-            color=discord.Color.green()
-        )
-        if description:
-            embed.add_field(name="Description", value=description, inline=False)
-
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="shortcut-delete-category", description="Delete a shortcut category")
-    @app_commands.describe(
-        category_name="Name of the category to delete",
-        confirm="Type 'CONFIRM' to confirm deletion"
-    )
-    @app_commands.guild_only()
-    async def slash_deletecategory(self, interaction: discord.Interaction, category_name: str, confirm: str = None):
-        """Slash command to delete a category."""
-        # Check permissions
-        if not interaction.user.guild_permissions.manage_messages:
-            await interaction.response.send_message("❌ You need 'Manage Messages' permission to use this command.", 
-                                                       ephemeral=True)
-            return
-
-        if category_name.lower() == "general":
-            await interaction.response.send_message("❌ Cannot delete the 'General' category.", ephemeral=True)
-            return
-
-        # Get all shortcuts in this category
-        ents: List[ShortcutEntry] = await ShortcutEntry.get_by(guild_id=interaction.guild.id, category=category_name)
-
-        if not ents:
-            await interaction.response.send_message(f"❌ Category '{category_name}' doesn't exist or has no shortcuts.", 
-                                                       ephemeral=True)
-            return
-
-        if confirm != "CONFIRM":
-            embed = discord.Embed(
-                title="⚠️ Delete Category Confirmation",
-                description=f"This will delete category '{category_name}' and move {len(ents)} shortcuts to 'General'.\n\n"
-                           f"To confirm, use this command again with `confirm: CONFIRM`",
-                color=discord.Color.orange()
-            )
-            embed.add_field(
-                name="Shortcuts that will be moved:",
-                value=", ".join([f"`{ent.name}`" for ent in ents[:10]]) +
-                      (f" and {len(ents) - 10} more..." if len(ents) > 10 else ""),
-                inline=False
-            )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        # Move all shortcuts to General category
-        for ent in ents:
-            ent.category = "General"
-            await ent.update_or_add()
-            self.cache.invalidate_entry(guild_id=interaction.guild.id, name=ent.name)
-
-        embed = discord.Embed(
-            title="✅ Category Deleted",
-            description=f"Category '{category_name}' has been deleted.\n"
-                       f"{len(ents)} shortcuts have been moved to 'General' category.",
-            color=discord.Color.green()
-        )
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="shortcut-move-category", description="Move a shortcut to a different category")
-    @app_commands.describe(
-        shortcut_name="Name of the shortcut to move",
-        category="Category to move the shortcut to"
-    )
-    @app_commands.guild_only()
-    async def slash_setcategory(self, interaction: discord.Interaction, shortcut_name: str, category: str):
-        """Slash command to move a shortcut to a different category."""
-        # Check permissions
-        if not interaction.user.guild_permissions.manage_messages:
-            await interaction.response.send_message("❌ You need 'Manage Messages' permission to use this command.", 
-                                                       ephemeral=True)
-            return
-
-        # Validate category name
-        if len(category) > 50:
-            await interaction.response.send_message("❌ Category names must be 50 characters or less.", 
-                                                       ephemeral=True)
-            return
-
-        if not category.replace(" ", "").replace("-", "").replace("_", "").isalnum():
-            await interaction.response.send_message("❌ Category names can only contain letters, numbers, spaces, hyphens, and underscores.", 
-                                                       ephemeral=True)
-            return
-
-        ent: ShortcutEntry = await self.cache.query_one(guild_id=interaction.guild.id, name=shortcut_name)
-
-        if not ent:
-            # Show available shortcuts
-            all_ents = await ShortcutEntry.get_by(guild_id=interaction.guild.id)
-            if all_ents:
-                available = ", ".join([f"`{e.name}`" for e in all_ents[:10]])
-                if len(all_ents) > 10:
-                    available += f" and {len(all_ents) - 10} more..."
-                await interaction.response.send_message(f"❌ No shortcut named '{shortcut_name}' found!\nAvailable shortcuts: {available}", 
-                                                           ephemeral=True)
-            else:
-                await interaction.response.send_message(f"❌ No shortcut named '{shortcut_name}' found! This server has no shortcuts.", 
-                                                           ephemeral=True)
-            return
-
-        old_category = ent.category or "General"
-
-        if old_category.lower() == category.lower():
-            await interaction.response.send_message(f"❌ Shortcut '{shortcut_name}' is already in category '{old_category}'.", 
-                                                       ephemeral=True)
-            return
-
-        ent.category = category
-        await ent.update_or_add()
-        self.cache.invalidate_entry(guild_id=interaction.guild.id, name=shortcut_name)
-
-        embed = discord.Embed(
-            title="✅ Shortcut Moved",
-            description=f"Moved shortcut `{shortcut_name}` from **{old_category}** to **{category}**",
-            color=discord.Color.green()
-        )
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="shortcut-list-categories", description="List all shortcut categories")
-    @app_commands.guild_only()
-    async def slash_categories(self, interaction: discord.Interaction):
-        """Slash command to list all categories."""
-        ents: List[ShortcutEntry] = await ShortcutEntry.get_by(guild_id=interaction.guild.id)
-
-        if not ents:
-            await interaction.response.send_message("❌ This server has no shortcuts!", ephemeral=True)
-            return
-
-        # Get unique categories and count shortcuts in each
-        category_counts = {}
-        for ent in ents:
-            category = ent.category or "General"
-            category_counts[category] = category_counts.get(category, 0) + 1
-
-        embed = discord.Embed(
-            title="Shortcut Categories",
-            color=discord.Color.blue()
-        )
-
-        for category, count in sorted(category_counts.items()):
-            embed.add_field(
-                name=category,
-                value=f"{count} shortcut{'s' if count != 1 else ''}",
-                inline=True
-            )
-
-        embed.set_footer(text=f"{len(ents)} total shortcuts")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    @app_commands.command(name="shortcut-list", description="Browse shortcuts by category")
-    @app_commands.guild_only()
-    async def slash_list(self, interaction: discord.Interaction):
-        """Slash command to list shortcuts with interactive menu."""
-        settings: ShortcutSetting = await self.settings_cache.query_one(guild_id=interaction.guild.id)
-
-        if settings is None:
-            await interaction.response.send_message("❌ This server has no shortcut configuration. An admin needs to set a prefix first.", 
-                                                       ephemeral=True)
-            return
-
-        ents: List[ShortcutEntry] = await ShortcutEntry.get_by(guild_id=interaction.guild.id)
-
-        if not ents:
-            await interaction.response.send_message("❌ This server has no shortcuts!", ephemeral=True)
-            return
-
-        # Create the interactive view
-        view = ShortcutListView(interaction.guild.id, self.settings_cache, self.cache)
-        await view.setup_categories()
-
-        embed = discord.Embed(
-            title="Shortcut Categories",
-            description="Select a category to view its shortcuts:",
-            color=discord.Color.blue()
-        )
-        embed.set_footer(text=f"{len(ents)} total shortcuts")
-
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-
-    # Autocomplete functions for slash commands
     async def category_autocomplete(self, interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
         """Autocomplete for category names"""
         try:
@@ -802,7 +572,6 @@ class Shortcuts(Cog):
             categories = list(set(ent.category or "General" for ent in ents))
             categories.sort()
 
-            # Filter categories based on current input
             filtered = [cat for cat in categories if current.lower() in cat.lower()][:25]  # Discord limit
 
             return [app_commands.Choice(name=cat, value=cat) for cat in filtered]
@@ -815,18 +584,12 @@ class Shortcuts(Cog):
             ents: List[ShortcutEntry] = await ShortcutEntry.get_by(guild_id=interaction.guild.id)
             shortcut_names = [ent.name for ent in ents]
 
-            # Filter shortcuts based on current input
             filtered = [name for name in shortcut_names if current.lower() in name.lower()][:25]  # Discord limit
 
             return [app_commands.Choice(name=name, value=name) for name in filtered]
         except Exception:
             return []
-
-    # Add autocomplete to the slash commands
-    slash_deletecategory.autocomplete('category_name')(category_autocomplete)
-    slash_setcategory.autocomplete('shortcut_name')(shortcut_autocomplete)
-    slash_setcategory.autocomplete('category')(category_autocomplete)
-
+    
     @guild_only()
     @shortcuts.command()
     async def csv(self, ctx):
@@ -841,7 +604,7 @@ class Shortcuts(Cog):
 
         stringfile = io.StringIO()
         csvwriter = csv.writer(stringfile)
-        # Add header row
+        
         csvwriter.writerow(["Shortcut", "Value", "Category"])
         for e in ents:
             csvwriter.writerow([settings.prefix + e.name, e.value, e.category or "General"])
@@ -851,6 +614,140 @@ class Shortcuts(Cog):
     csv.example_usage = """
         `{prefix}shortcuts csv - exports all shortcuts as a csv
         """
+
+
+    @guild_only()
+    @has_permissions(manage_messages=True)
+    @shortcuts.command()
+    async def bulk_delete(self, ctx, category: str = None, *, confirm: str = None):
+        """Delete multiple shortcuts at once, optionally filtering by category."""
+        if category and category.lower() == "all" and confirm != "CONFIRM":
+            embed = discord.Embed(
+                title="⚠️ Bulk Delete Confirmation",
+                description="This will delete **ALL** shortcuts in this server.\n\n"
+                           f"To confirm, run:\n`{ctx.prefix}shortcuts bulk_delete all CONFIRM`",
+                color=discord.Color.orange()
+            )
+            await ctx.send(embed=embed)
+            return
+            
+        if category and category.lower() != "all" and confirm != "CONFIRM":
+            embed = discord.Embed(
+                title="⚠️ Bulk Delete Confirmation",
+                description=f"This will delete **ALL** shortcuts in the '{category}' category.\n\n"
+                           f"To confirm, run:\n`{ctx.prefix}shortcuts bulk_delete {category} CONFIRM`",
+                color=discord.Color.orange()
+            )
+            await ctx.send(embed=embed)
+            return
+            
+        if not category and confirm != "CONFIRM":
+            ents: List[ShortcutEntry] = await ShortcutEntry.get_by(guild_id=ctx.guild.id)
+            if not ents:
+                await ctx.send("No shortcuts for this server!")
+                return
+                
+            categories = list(set(ent.category or "General" for ent in ents))
+            categories.sort()
+            
+            embed = discord.Embed(
+                title="Bulk Delete - Select Category",
+                description="Please specify a category to delete shortcuts from, or use 'all' to delete all shortcuts.\n\n"
+                           f"Example: `{ctx.prefix}shortcuts bulk_delete Fun CONFIRM`\n"
+                           f"Or: `{ctx.prefix}shortcuts bulk_delete all CONFIRM`",
+                color=discord.Color.blue()
+            )
+            
+            categories_text = "\n".join([f"• {cat}" for cat in categories])
+            embed.add_field(name="Available Categories", value=categories_text, inline=False)
+            
+            await ctx.send(embed=embed)
+            return
+            
+        if category and category.lower() == "all" and confirm == "CONFIRM":
+            count = await ShortcutEntry.delete_all(guild_id=ctx.guild.id)
+            self.cache.invalidate_by_guild(ctx.guild.id)
+            
+            embed = discord.Embed(
+                title="✅ Bulk Delete Complete",
+                description=f"Deleted {count} shortcuts from all categories.",
+                color=discord.Color.green()
+            )
+            await ctx.send(embed=embed)
+            return
+            
+        if category and confirm == "CONFIRM":
+            ents: List[ShortcutEntry] = await ShortcutEntry.get_by(guild_id=ctx.guild.id, category=category)
+            
+            if not ents:
+                await ctx.send(f"No shortcuts found in category '{category}'.")
+                return
+                
+            count = 0
+            for ent in ents:
+                await ShortcutEntry.delete(guild_id=ctx.guild.id, name=ent.name)
+                self.cache.invalidate_entry(guild_id=ctx.guild.id, name=ent.name)
+                count += 1
+                
+            embed = discord.Embed(
+                title="✅ Bulk Delete Complete",
+                description=f"Deleted {count} shortcuts from the '{category}' category.",
+                color=discord.Color.green()
+            )
+            await ctx.send(embed=embed)
+
+    bulk_delete.example_usage = """
+    `{prefix}shortcuts bulk_delete` - Shows available categories to delete
+    `{prefix}shortcuts bulk_delete Fun` - Shows confirmation to delete all shortcuts in Fun category
+    `{prefix}shortcuts bulk_delete Fun CONFIRM` - Deletes all shortcuts in Fun category
+    `{prefix}shortcuts bulk_delete all CONFIRM` - Deletes ALL shortcuts in the server
+    """
+
+    @guild_only()
+    @has_permissions(manage_messages=True)
+    @shortcuts.command()
+    async def rename(self, ctx, old_name: str, new_name: str):
+        """Rename a shortcut while keeping its value and category."""
+        if len(new_name) > self.MAX_LEN:
+            raise BadArgument(f"Shortcut names can only be up to {self.MAX_LEN} characters long")
+            
+        old_ent: ShortcutEntry = await self.cache.query_one(guild_id=ctx.guild.id, name=old_name)
+        if not old_ent:
+            await ctx.send(f"No shortcut named '{old_name}' found!")
+            return
+            
+        new_ent: ShortcutEntry = await self.cache.query_one(guild_id=ctx.guild.id, name=new_name)
+        if new_ent:
+            await ctx.send(f"A shortcut named '{new_name}' already exists!")
+            return
+            
+        new_shortcut = ShortcutEntry(
+            guild_id=ctx.guild.id,
+            name=new_name,
+            value=old_ent.value,
+            category=old_ent.category
+        )
+        
+        await new_shortcut.update_or_add()
+        await ShortcutEntry.delete(guild_id=ctx.guild.id, name=old_name)
+        
+        self.cache.invalidate_entry(guild_id=ctx.guild.id, name=old_name)
+        self.cache.invalidate_entry(guild_id=ctx.guild.id, name=new_name)
+        
+        settings: ShortcutSetting = await self.settings_cache.query_one(guild_id=ctx.guild.id)
+        prefix = settings.prefix if settings else ""
+        
+        embed = discord.Embed(
+            title="✅ Shortcut Renamed",
+            description=f"Renamed shortcut from `{prefix}{old_name}` to `{prefix}{new_name}`",
+            color=discord.Color.green()
+        )
+        await ctx.send(embed=embed)
+
+    rename.example_usage = """
+    `{prefix}shortcuts rename hello greeting` - renames the shortcut 'hello' to 'greeting'
+    """
+
 
     @Cog.listener()
     async def on_message(self, msg):
@@ -872,10 +769,151 @@ class Shortcuts(Cog):
         if not shortcuts:
             return
 
+        command_name = c.lower()[len(setting.prefix):]
+        
         for shortcut in shortcuts:
-            if c.lower()[len(setting.prefix):] == shortcut.name.lower():
+            if command_name == shortcut.name.lower():
                 await msg.channel.send(shortcut.value)
                 return
+
+    @guild_only()
+    @has_permissions(manage_messages=True)
+    @shortcuts.command()
+    async def import_shortcuts(self, ctx: DozerContext):
+        """Import shortcuts from a CSV file (attached to the message).
+        CSV format should have columns: Shortcut, Value, Category"""
+        if not ctx.message.attachments:
+            await ctx.send("Please attach a CSV file to import shortcuts from.")
+            return
+            
+        attachment = ctx.message.attachments[0]
+        if not attachment.filename.endswith('.csv'):
+            await ctx.send("Please attach a CSV file (must have .csv extension).")
+            return
+            
+        try:
+            content = await attachment.read()
+            csv_content = content.decode('utf-8')
+            
+            reader = csv.reader(io.StringIO(csv_content))
+            first_row = next(reader, None)
+            
+            if not first_row or len(first_row) < 2:
+                await ctx.send("Invalid CSV format. File must have at least 'Shortcut' and 'Value' columns.")
+                return
+            
+    
+            has_headers = False
+            shortcut_col = 0
+            value_col = 1
+            category_col = 2 if len(first_row) > 2 else None
+            
+            if first_row[0].lower() == 'shortcut' and first_row[1].lower() == 'value':
+                has_headers = True
+                for i, header in enumerate(first_row):
+                    header_lower = header.lower()
+                    if header_lower == 'shortcut':
+                        shortcut_col = i
+                    elif header_lower == 'value':
+                        value_col = i
+                    elif header_lower == 'category':
+                        category_col = i
+            
+            settings: ShortcutSetting = await self.settings_cache.query_one(guild_id=ctx.guild.id)
+            if settings is None:
+                await ctx.send(f"Set a prefix first using `{ctx.prefix}shortcuts setprefix <prefix>`")
+                return
+                
+            imported = 0
+            skipped = 0
+            errors = []
+            
+            if not has_headers:
+                reader = csv.reader(io.StringIO(csv_content))
+            
+            for row_num, row in enumerate(reader, 1 if has_headers else 0):
+                if len(row) <= max(shortcut_col, value_col):
+                    errors.append(f"Row {row_num + 1}: Not enough columns")
+                    continue
+                    
+                shortcut_name = row[shortcut_col]
+                value = row[value_col]
+                category = row[category_col] if category_col is not None and len(row) > category_col else "General"
+                
+                if shortcut_name.startswith(settings.prefix):
+                    shortcut_name = shortcut_name[len(settings.prefix):]
+                    
+                if len(shortcut_name) > self.MAX_LEN:
+                    errors.append(f"Row {row_num + 1}: Shortcut name too long (max {self.MAX_LEN} chars)")
+                    skipped += 1
+                    continue
+                    
+                if not shortcut_name or not value:
+                    errors.append(f"Row {row_num + 1}: Shortcut name or value is empty")
+                    skipped += 1
+                    continue
+                    
+                if len(category) > 50:
+                    errors.append(f"Row {row_num + 1}: Category name too long (max 50 chars)")
+                    category = "General"
+                    
+                if not category.replace(" ", "").replace("-", "").replace("_", "").isalnum():
+                    errors.append(f"Row {row_num + 1}: Invalid category name (only letters, numbers, spaces, hyphens, underscores)")
+                    category = "General"
+                
+                try:
+                    ent: ShortcutEntry = await self.cache.query_one(guild_id=ctx.guild.id, name=shortcut_name)
+                    
+                    if ent:
+                        ent.value = value
+                        ent.category = category
+                    else:
+                        ent = ShortcutEntry(guild_id=ctx.guild.id, name=shortcut_name, value=value, category=category)
+                        
+                    await ent.update_or_add()
+                    self.cache.invalidate_entry(guild_id=ctx.guild.id, name=shortcut_name)
+                    imported += 1
+                except Exception as e:
+                    errors.append(f"Row {row_num + 1}: Error saving - {str(e)}")
+                    skipped += 1
+            
+            embed = discord.Embed(
+                title="CSV Import Results",
+                color=discord.Color.green() if imported > 0 else discord.Color.red()
+            )
+            
+            embed.add_field(name="Imported", value=str(imported), inline=True)
+            embed.add_field(name="Skipped", value=str(skipped), inline=True)
+            
+            if errors:
+                error_text = "\n".join(errors[:10])
+                if len(errors) > 10:
+                    error_text += f"\n... and {len(errors) - 10} more errors"
+                embed.add_field(name="Errors", value=error_text, inline=False)
+                
+            await ctx.send(embed=embed)
+            
+        except UnicodeDecodeError:
+            await ctx.send("Could not decode the CSV file. Please ensure it's saved with UTF-8 encoding.")
+        except csv.Error:
+            await ctx.send("Invalid CSV format. Please check your file and try again.")
+        except Exception as e:
+            await ctx.send(f"An error occurred: {str(e)}")
+
+    import_shortcuts.example_usage = """
+    `{prefix}import_shortcuts` - Upload a CSV file with your shortcuts when using this command
+    
+    CSV format examples:
+    
+    With headers:
+    Shortcut,Value,Category
+    hello,Hello World!,Greetings
+    rules,Please follow our server rules,Moderation
+    
+    Without headers (assumes first column is shortcut, second is value, third is category):
+    hello,Hello World!,Greetings
+    rules,Please follow our server rules,Moderation
+    """
 
 async def setup(bot):
     """Adds the shortcuts cog to the main bot project."""
