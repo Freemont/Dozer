@@ -76,23 +76,6 @@ class FTCEventsClient:
             return await res.json(content_type=None)
 
     @staticmethod
-    def get_season():
-        """Fetches the current season, based on typical kickoff date."""
-        today = datetime.today()
-        year = today.year
-        # ftc kickoff is always the 2nd saturday of september
-        kickoff = [d for d in [datetime(year=year, month=9, day=i) for i in range(8, 15)] if d.weekday() == 5][
-            0]
-        if kickoff > today:
-            return today.year - 1
-        return today.year
-
-    @staticmethod
-    def date_parse(date_str):
-        """Takes in date strings from FTC-Events and parses them into a datetime.datetime"""
-        return datetime.strptime(date_str, "%Y-%m-%dT%H:%M:%S")
-
-    @staticmethod
     def team_fmt(team, team_num=None):
         """TBA-formats a team."""
         t = str(team['teamNumber'])
@@ -220,6 +203,24 @@ class ScoutParser:
                 if tries > 3:
                     raise
 
+    @staticmethod
+    def get_season():
+        """Fetches the current season, based on typical kickoff date."""
+        today = datetime.today()
+        year = today.year
+        # ftc kickoff is always the 2nd saturday of september
+        kickoff = [d for d in [datetime(year=year, month=9, day=i) for i in range(8, 15)] if d.weekday() == 5][
+            0]
+        if kickoff > today:
+            return today.year - 1
+        return today.year
+
+    @staticmethod
+    def date_parse(date_str):
+        """Takes in date strings from FTCScout and parses them into a datetime.datetime"""
+        if date_str.endsWith('Z'): # from my testing, it has only been Z appended to the end of the timestamp (which means its @ UTC)
+            date_str = date_str[:-1] + '00:00' # 0 hour offset from utc
+        return datetime.fromisoformat(date_str)
 
 class FTCInfo(Cog):
     """Commands relating specifically to fetching information about FTC teams."""
@@ -227,14 +228,12 @@ class FTCInfo(Cog):
     def __init__(self, bot: commands.Bot):
         super().__init__(bot)
         self.http_session = bot.add_aiohttp_ses(aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(5)))
-        self.ftcevents = FTCEventsClient(bot.config['ftc-events']['username'], bot.config['ftc-events']['token'],
-                                         self.http_session)
         self.scparser = ScoutParser(self.http_session)
 
     @group(invoke_without_command=True, aliases=["ftcteam", "toa", "toateam", "ftcteaminfo"])
     async def ftc(self, ctx: DozerContext, *, team_name: str):
         """
-        Get information on an FTC team from FTC-Events.
+        Get information on an FTC team from FTC Scout.
         If no subcommand is specified, the `team` subcommand is inferred, and the argument is taken as a team number.
         """
         await self.searchteam.callback(self, ctx, team_name)  # This works but Pylint throws an error
@@ -251,35 +250,34 @@ class FTCInfo(Cog):
         if team_num < 1:
             await ctx.send("Invalid team number specified!")
             return
-        res = await self.ftcevents.req("teams?" + urlencode({'teamNumber': str(team_num)}))
+        res = await self.scparser.req(f'teams/{team_num}')
         async with res:
             if res.status == 400:
                 await ctx.send(f"Team {team_num} either did not compete this season, or it does not exist!")
                 return
-            team_data = await res.json(content_type=None)
+            team_data = json.loads(await res.text())
             if not team_data:
-                await ctx.send(f"FTC-Events returned nothing on request with HTTP response code {res.status}.")
+                await ctx.send(f"FTC Scout returned nothing on request with HTTP response code {res.status}.")
                 return
-            team_data = team_data['teams'][0]
 
             # many team entries lack a valid url
-            website = get_none_strip(team_data, 'website')
+            website = team_data['website'].strip()
             if website and not (website.startswith("http://") or website.startswith("https://")):
                 website = "http://" + website
 
             e = discord.Embed(color=embed_color,
                               title=f'FIRST® Tech Challenge Team {team_num}',
-                              url=f"https://ftc-events.firstinspires.org/{FTCEventsClient.get_season()}/team/{team_num}")
-            e.add_field(name='Name', value=get_none_strip(team_data, 'nameShort') or "_ _")
-            e.add_field(name='Rookie Year', value=get_none_strip(team_data, 'rookieYear') or "Unknown")
+                              url=f"https://ftcscout.org/teams/{team_num}")
+            e.add_field(name='Name', value=team_data['name'] or "_ _")
+            e.add_field(name='Rookie Year', value=team_data['rookieYear'] or "Unknown")
             e.add_field(name='Location',
-                        value=', '.join((team_data['city'], team_data['stateProv'], team_data['country'])) or "Unknown")
-            e.add_field(name='Org/Sponsors', value=team_data.get('nameFull', "").strip() or "_ _")
+                        value=', '.join((team_data['city'], team_data['state'], team_data['country'])) or "Unknown")
+            e.add_field(name='Org/Sponsors', value= (team_data['sponsors'] or "").strip() + (team_data['schoolName'] or "").strip()) # ftcevents automatically adds school name to sponsors? so add it manually if it exists
             e.add_field(name='Website', value=website or 'n/a')
-            e.add_field(name='FTCScout Page', value=f'https://ftcscout.org/teams/{team_num}')
+            # e.add_field(name='FTCScout Page', value=f'https://ftcscout.org/teams/{team_num}') # already in title
 
             e.set_footer(
-                text="Team information from FTC-Events.")
+                text="Team information from FTC Scout.")
 
             await ctx.send(embed=e)
 
@@ -358,8 +356,8 @@ class FTCInfo(Cog):
             await ctx.send("Invalid team number specified!")
             return
         res = await self.ftcevents.req("teams?" + urlencode({'teamNumber': str(team_num)}))
-        sres = await self.scparser.req(f"teams/{team_num}/quick-stats")
-        async with res, sres:
+        
+        async with res:
             if res.status == 400:
                 await ctx.send(f"Team {team_num} either did not compete this season, or it does not exist!")
                 return
@@ -368,6 +366,8 @@ class FTCInfo(Cog):
                 await ctx.send(f"FTC-Events returned nothing on request with HTTP response code {res.status}.")
                 return
             team_data = team_data['teams'][0]
+
+            sres = await self.scparser.req(f"teams/{team_num}/quick-stats")
 
             # many team entries lack a valid url
             website = get_none_strip(team_data, 'website')
