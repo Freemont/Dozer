@@ -167,6 +167,7 @@ class ShortcutPreviousButton(discord.ui.Button):
         )
 
     async def callback(self, interaction: discord.Interaction):
+        """Handle button click to go to the previous page"""
         view = self.view
         if view.current_page > 0:
             view.current_page -= 1
@@ -186,6 +187,7 @@ class ShortcutNextButton(discord.ui.Button):
         )
 
     async def callback(self, interaction: discord.Interaction):
+        """Handle button click to go to the next page"""
         view = self.view
         if view.current_page < view.max_pages - 1:
             view.current_page += 1
@@ -566,7 +568,16 @@ class Shortcuts(Cog):
     """
 
     async def category_autocomplete(self, interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
-        """Autocomplete for category names"""
+        """
+        Autocomplete for category names in slash commands.
+        
+        Args:
+            interaction: The Discord interaction
+            current: The current input string
+            
+        Returns:
+            List of category choices that match the current input
+        """
         try:
             ents: List[ShortcutEntry] = await ShortcutEntry.get_by(guild_id=interaction.guild.id)
             categories = list(set(ent.category or "General" for ent in ents))
@@ -579,7 +590,16 @@ class Shortcuts(Cog):
             return []
 
     async def shortcut_autocomplete(self, interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
-        """Autocomplete for shortcut names"""
+        """
+        Autocomplete for shortcut names in slash commands.
+        
+        Args:
+            interaction: The Discord interaction
+            current: The current input string
+            
+        Returns:
+            List of shortcut name choices that match the current input
+        """
         try:
             ents: List[ShortcutEntry] = await ShortcutEntry.get_by(guild_id=interaction.guild.id)
             shortcut_names = [ent.name for ent in ents]
@@ -792,103 +812,23 @@ class Shortcuts(Cog):
             return
             
         try:
-            content = await attachment.read()
-            csv_content = content.decode('utf-8')
+            # Read and parse CSV
+            csv_content = (await attachment.read()).decode('utf-8')
+            import_results = await self._process_csv_import(ctx, csv_content)
             
-            reader = csv.reader(io.StringIO(csv_content))
-            first_row = next(reader, None)
-            
-            if not first_row or len(first_row) < 2:
-                await ctx.send("Invalid CSV format. File must have at least 'Shortcut' and 'Value' columns.")
-                return
-            
-    
-            has_headers = False
-            shortcut_col = 0
-            value_col = 1
-            category_col = 2 if len(first_row) > 2 else None
-            
-            if first_row[0].lower() == 'shortcut' and first_row[1].lower() == 'value':
-                has_headers = True
-                for i, header in enumerate(first_row):
-                    header_lower = header.lower()
-                    if header_lower == 'shortcut':
-                        shortcut_col = i
-                    elif header_lower == 'value':
-                        value_col = i
-                    elif header_lower == 'category':
-                        category_col = i
-            
-            settings: ShortcutSetting = await self.settings_cache.query_one(guild_id=ctx.guild.id)
-            if settings is None:
-                await ctx.send(f"Set a prefix first using `{ctx.prefix}shortcuts setprefix <prefix>`")
-                return
-                
-            imported = 0
-            skipped = 0
-            errors = []
-            
-            if not has_headers:
-                reader = csv.reader(io.StringIO(csv_content))
-            
-            for row_num, row in enumerate(reader, 1 if has_headers else 0):
-                if len(row) <= max(shortcut_col, value_col):
-                    errors.append(f"Row {row_num + 1}: Not enough columns")
-                    continue
-                    
-                shortcut_name = row[shortcut_col]
-                value = row[value_col]
-                category = row[category_col] if category_col is not None and len(row) > category_col else "General"
-                
-                if shortcut_name.startswith(settings.prefix):
-                    shortcut_name = shortcut_name[len(settings.prefix):]
-                    
-                if len(shortcut_name) > self.MAX_LEN:
-                    errors.append(f"Row {row_num + 1}: Shortcut name too long (max {self.MAX_LEN} chars)")
-                    skipped += 1
-                    continue
-                    
-                if not shortcut_name or not value:
-                    errors.append(f"Row {row_num + 1}: Shortcut name or value is empty")
-                    skipped += 1
-                    continue
-                    
-                if len(category) > 50:
-                    errors.append(f"Row {row_num + 1}: Category name too long (max 50 chars)")
-                    category = "General"
-                    
-                if not category.replace(" ", "").replace("-", "").replace("_", "").isalnum():
-                    errors.append(f"Row {row_num + 1}: Invalid category name (only letters, numbers, spaces, hyphens, underscores)")
-                    category = "General"
-                
-                try:
-                    ent: ShortcutEntry = await self.cache.query_one(guild_id=ctx.guild.id, name=shortcut_name)
-                    
-                    if ent:
-                        ent.value = value
-                        ent.category = category
-                    else:
-                        ent = ShortcutEntry(guild_id=ctx.guild.id, name=shortcut_name, value=value, category=category)
-                        
-                    await ent.update_or_add()
-                    self.cache.invalidate_entry(guild_id=ctx.guild.id, name=shortcut_name)
-                    imported += 1
-                except Exception as e:
-                    errors.append(f"Row {row_num + 1}: Error saving - {str(e)}")
-                    skipped += 1
-            
+            # Send results
             embed = discord.Embed(
                 title="CSV Import Results",
-                color=discord.Color.green() if imported > 0 else discord.Color.red()
+                color=discord.Color.green() if import_results["imported"] > 0 else discord.Color.red()
             )
             
-            embed.add_field(name="Imported", value=str(imported), inline=True)
-            embed.add_field(name="Skipped", value=str(skipped), inline=True)
+            embed.add_field(name="Imported", value=str(import_results["imported"]), inline=True)
+            embed.add_field(name="Skipped", value=str(import_results["skipped"]), inline=True)
             
-            if errors:
-                error_text = "\n".join(errors[:10])
-                if len(errors) > 10:
-                    error_text += f"\n... and {len(errors) - 10} more errors"
+            if import_results["errors"]:
+                error_text = "\n".join(import_results["errors"][:10])
+                if len(import_results["errors"]) > 10:
+                    error_text += f"\n... and {len(import_results['errors']) - 10} more errors"
                 embed.add_field(name="Errors", value=error_text, inline=False)
                 
             await ctx.send(embed=embed)
@@ -899,6 +839,145 @@ class Shortcuts(Cog):
             await ctx.send("Invalid CSV format. Please check your file and try again.")
         except Exception as e:
             await ctx.send(f"An error occurred: {str(e)}")
+
+    async def _process_csv_import(self, ctx, csv_content):
+        """Process CSV content and import shortcuts
+        
+        Args:
+            ctx: Command context
+            csv_content: String content of the CSV file
+            
+        Returns:
+            Dictionary with import results
+        """
+        reader = csv.reader(io.StringIO(csv_content))
+        first_row = next(reader, None)
+        
+        if not first_row or len(first_row) < 2:
+            raise ValueError("Invalid CSV format. File must have at least 'Shortcut' and 'Value' columns.")
+        
+        # Determine column positions
+        column_info = self._get_csv_column_info(first_row)
+        has_headers = column_info["has_headers"]
+        
+        # Get settings for prefix
+        settings: ShortcutSetting = await self.settings_cache.query_one(guild_id=ctx.guild.id)
+        if settings is None:
+            raise ValueError(f"Set a prefix first using `{ctx.prefix}shortcuts setprefix <prefix>`")
+            
+        # Process rows
+        results = {"imported": 0, "skipped": 0, "errors": []}
+        
+        # If first row wasn't headers, process it as data
+        if not has_headers:
+            # Reset reader to include first row
+            reader = csv.reader(io.StringIO(csv_content))
+        
+        for row_num, row in enumerate(reader, 1 if has_headers else 0):
+            try:
+                await self._process_csv_row(row, row_num, column_info, settings, results, ctx.guild.id)
+            except Exception as e:
+                results["errors"].append(f"Row {row_num + 1}: Error - {str(e)}")
+                results["skipped"] += 1
+                
+        return results
+        
+    def _get_csv_column_info(self, first_row):
+        """Determine CSV column positions and if headers are present
+        
+        Args:
+            first_row: First row of the CSV
+            
+        Returns:
+            Dictionary with column information
+        """
+        has_headers = False
+        shortcut_col = 0
+        value_col = 1
+        category_col = 2 if len(first_row) > 2 else None
+        
+        # Check if first row looks like headers
+        if first_row[0].lower() == 'shortcut' and first_row[1].lower() == 'value':
+            has_headers = True
+            # Find column indices from headers
+            for i, header in enumerate(first_row):
+                header_lower = header.lower()
+                if header_lower == 'shortcut':
+                    shortcut_col = i
+                elif header_lower == 'value':
+                    value_col = i
+                elif header_lower == 'category':
+                    category_col = i
+                    
+        return {
+            "has_headers": has_headers,
+            "shortcut_col": shortcut_col,
+            "value_col": value_col,
+            "category_col": category_col
+        }
+        
+    async def _process_csv_row(self, row, row_num, column_info, settings, results, guild_id):
+        """Process a single CSV row
+        
+        Args:
+            row: CSV row data
+            row_num: Row number (for error reporting)
+            column_info: Column position information
+            settings: Guild shortcut settings
+            results: Results dictionary to update
+            guild_id: Guild ID
+            
+        Returns:
+            None (updates results dictionary)
+        """
+        shortcut_col = column_info["shortcut_col"]
+        value_col = column_info["value_col"]
+        category_col = column_info["category_col"]
+        
+        if len(row) <= max(shortcut_col, value_col):
+            results["errors"].append(f"Row {row_num + 1}: Not enough columns")
+            return
+            
+        shortcut_name = row[shortcut_col]
+        value = row[value_col]
+        category = row[category_col] if category_col is not None and len(row) > category_col else "General"
+        
+        # Remove prefix if it exists
+        if shortcut_name.startswith(settings.prefix):
+            shortcut_name = shortcut_name[len(settings.prefix):]
+            
+        # Validate shortcut name
+        if len(shortcut_name) > self.MAX_LEN:
+            results["errors"].append(f"Row {row_num + 1}: Shortcut name too long (max {self.MAX_LEN} chars)")
+            results["skipped"] += 1
+            return
+            
+        if not shortcut_name or not value:
+            results["errors"].append(f"Row {row_num + 1}: Shortcut name or value is empty")
+            results["skipped"] += 1
+            return
+            
+        # Validate category
+        if len(category) > 50:
+            results["errors"].append(f"Row {row_num + 1}: Category name too long (max 50 chars)")
+            category = "General"  # Default to General if too long
+            
+        if not category.replace(" ", "").replace("-", "").replace("_", "").isalnum():
+            results["errors"].append(f"Row {row_num + 1}: Invalid category name (only letters, numbers, spaces, hyphens, underscores)")
+            category = "General"  # Default to General if invalid
+        
+        # Create or update shortcut
+        ent: ShortcutEntry = await self.cache.query_one(guild_id=guild_id, name=shortcut_name)
+        
+        if ent:
+            ent.value = value
+            ent.category = category
+        else:
+            ent = ShortcutEntry(guild_id=guild_id, name=shortcut_name, value=value, category=category)
+            
+        await ent.update_or_add()
+        self.cache.invalidate_entry(guild_id=guild_id, name=shortcut_name)
+        results["imported"] += 1
 
     import_shortcuts.example_usage = """
     `{prefix}import_shortcuts` - Upload a CSV file with your shortcuts when using this command
