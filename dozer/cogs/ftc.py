@@ -261,9 +261,20 @@ class FTCInfo(Cog):
                 return
 
             # many team entries lack a valid url
-            website = team_data['website'].strip()
+            website = (team_data['website'] or "").strip()
             if website and not (website.startswith("http://") or website.startswith("https://")):
                 website = "http://" + website
+
+            sn = ""
+            sp = ""
+            if team_data['sponsors']:
+                e = team_data['sponsors']
+                sp = str(e)[1:-1]
+                sp = sp.replace("'", "")
+                sn = "& "
+
+            if team_data['schoolName']:
+                sn += (str(team_data['schoolName']))
 
             e = discord.Embed(color=embed_color,
                               title=f'FIRST® Tech Challenge Team {team_num}',
@@ -272,7 +283,7 @@ class FTCInfo(Cog):
             e.add_field(name='Rookie Year', value=team_data['rookieYear'] or "Unknown")
             e.add_field(name='Location',
                         value=', '.join((team_data['city'], team_data['state'], team_data['country'])) or "Unknown")
-            e.add_field(name='Org/Sponsors', value= (team_data['sponsors'] or "").strip() + (team_data['schoolName'] or "").strip()) # ftcevents automatically adds school name to sponsors? so add it manually if it exists
+            e.add_field(name='Org/Sponsors', value= (sp.strip() + "" + sn.strip()).strip()) # ftcevents automatically adds school name to sponsors? so add it manually if it exists
             e.add_field(name='Website', value=website or 'n/a')
             # e.add_field(name='FTCScout Page', value=f'https://ftcscout.org/teams/{team_num}') # already in title
 
@@ -313,8 +324,7 @@ class FTCInfo(Cog):
             e = discord.Embed(color=embed_color, title=f"FTC Team Search: {team_name}")
             for team in team_data:
                 e.add_field(name = f"Team {team['number']} - **{team['name']}**",
-                            value = f"{team['city']}, {(team['state'] + ', ') if not team['state'].isdigit() else ''}{team['country']}",
-                            inline = False)
+                            value = f"{team['city']}, {(team['state'] + ', ') if not team['state'].isdigit() else ''}{team['country']}")
             e.set_footer(text = "Team information from FTCScout")
 
         view = discord.ui.View()
@@ -355,51 +365,67 @@ class FTCInfo(Cog):
         if team_num < 1:
             await ctx.send("Invalid team number specified!")
             return
-        res = await self.ftcevents.req("teams?" + urlencode({'teamNumber': str(team_num)}))
         
-        async with res:
+        res = await self.scparser.req(f'teams/{team_num}')
+        sres = await self.scparser.req(f"teams/{team_num}/quick-stats")
+        
+        async with res, sres:
             if res.status == 400:
                 await ctx.send(f"Team {team_num} either did not compete this season, or it does not exist!")
                 return
-            team_data = await res.json(content_type=None)
+            team_data = json.loads(await res.text())
+            stats = json.loads(await sres.text())
+
             if not team_data:
-                await ctx.send(f"FTC-Events returned nothing on request with HTTP response code {res.status}.")
+                await ctx.send(f"FTCScout returned nothing on request with HTTP response code {res.status} .")
                 return
-            team_data = team_data['teams'][0]
+            
+            if not stats:
+                await ctx.send(f"FTCScout returned nothing on request with HTTP response code {sres.status} .")
+                return
 
-            sres = await self.scparser.req(f"teams/{team_num}/quick-stats")
-
+            if team_data['website']:
+                web = str(team_data['website'])
+            else:
+                web = ""
             # many team entries lack a valid url
-            website = get_none_strip(team_data, 'website')
+            website = web.strip() # you cant use get_none_strip because you cant .get a coroutine 
             if website and not (website.startswith("http://") or website.startswith("https://")):
                 website = "http://" + website
 
+            sn = ""
+            sp = ""
+            if team_data['sponsors']:
+                e = team_data['sponsors']
+                sp = str(e)[1:-1]
+                sp = sp.replace("'", "")
+                sn = "& "
+
+            if team_data['schoolName']:
+                sn += (str(team_data['schoolName']))
+        
             e = discord.Embed(color=embed_color,
                               title=f'FIRST® Tech Challenge Team {team_num}',
-                              url=f"https://ftc-events.firstinspires.org/{FTCEventsClient.get_season()}/team/{team_num}")
-            e.add_field(name='Name', value=get_none_strip(team_data, 'nameShort') or "_ _")
-            e.add_field(name='Rookie Year', value=get_none_strip(team_data, 'rookieYear') or "Unknown")
+                              url=f"https://ftcscout.org/teams/{team_num}")
+            e.add_field(name='Name', value=team_data['name'] or "_ _")
+            e.add_field(name='Rookie Year', value=team_data['rookieYear'] or "Unknown")
             e.add_field(name='Location',
-                        value=', '.join(
-                            (team_data['city'], team_data['stateProv'], team_data['country'])) or "Unknown")
-            e.add_field(name='Org/Sponsors', value=team_data.get('nameFull', "").strip() or "_ _")
+                        value=', '.join((team_data['city'], team_data['state'], team_data['country'])) or "Unknown")
+            e.add_field(name='Org/Sponsors', value= (sp.strip() + " " + sn.strip()).strip()) # ftcevents automatically adds school name to sponsors? so add it manually if it exists
             e.add_field(name='Website', value=website or 'n/a')
-            e.add_field(name='FTCScout Page', value=f'https://ftcscout.org/teams/{team_num}')
-
-            if sres.status != 404:
-                team_stats = await sres.json(content_type=None)
-                e.add_field(name='Total OPR',
-                            value=f"{team_stats['tot']['value']:.0f}, rank #{team_stats['tot']['rank']:.0f}")
-                e.add_field(name='Auto OPR',
-                            value=f"{team_stats['auto']['value']:.0f}, rank #{team_stats['auto']['rank']:.0f}")
-                e.add_field(name='Teleop OPR',
-                            value=f"{team_stats['dc']['value']:.0f}, rank #{team_stats['dc']['rank']:.0f}")
-                e.add_field(name='Endgame OPR',
-                            value=f"{team_stats['eg']['value']:.0f}, rank #{team_stats['eg']['rank']:.0f}")
+            # e.add_field(name='FTCScout Page', value=f'https://ftcscout.org/teams/{team_num}') # already in title
+            # e.add_field(name = chr(173), value = chr(173)) # separate team info from stats using whitespace? characters
+            e.add_field(name='Total OPR',
+                        value=f"{stats['tot']['value']:.0f}, rank #{stats['tot']['rank']:.0f}")
+            e.add_field(name='Auto OPR',
+                        value=f"{stats['auto']['value']:.0f}, rank #{stats['auto']['rank']:.0f}")
+            e.add_field(name='Teleop OPR',
+                        value=f"{stats['dc']['value']:.0f}, rank #{stats['dc']['rank']:.0f}")
+            e.add_field(name='Endgame OPR',
+                        value=f"{stats['eg']['value']:.0f}, rank #{stats['eg']['rank']:.0f}")
 
             e.set_footer(
-                text="Team information from FTC-Events. "
-                     "OPR data from FTCScout.")
+                text="Information from FTCScout.")
 
             await ctx.send(embed=e)
 
