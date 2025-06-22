@@ -113,12 +113,10 @@ _Please set your nickname with `%nick NAME - TEAM#` in #bot-spam to reflect your
 
     @Cog.listener
     async def on_thread_create(self, thread):
-        if (thread.parent.id is not in THREAD_MESSAGE_REMOVE_CHANNEL_IDS):
-            return
-        async for message in thread.parent.history(limit=10):
+        if thread.parent.id in THREAD_MESSAGE_REMOVE_CHANNEL_IDS:
+            message = thread.message
             if (message.type == MessageType.thread_created and message.thread and message.thread.id == thread.id):
                 await message.delete()
-                break
                 
 async def setup(bot):
     await bot.add_cog(Hacks(bot))
