@@ -1,4 +1,5 @@
 """Provides commands that pull information from First Q&A Form."""
+import html
 from typing import Union
 import re
 import datetime
@@ -38,6 +39,7 @@ async def data(ctx: DozerContext, level: str, question: int) -> Union[str, None]
         a = a.replace("\n", " ")
         # remove multiple spaces
         a = " ".join(a.split())
+        a = html.unescape(a)
         embed = discord.Embed(
             title=a[:a.find(" Q: ")],
             url=forum_url + str(question),
@@ -45,6 +47,8 @@ async def data(ctx: DozerContext, level: str, question: int) -> Union[str, None]
         )
         ques = a[a.find(" Q: ") + 1:a.find(" A: ")]
         ans = a[a.find(" A: ") + 1:a.find(" ( Asked by ")]
+        ques = html.unescape(ques)
+        ans = html.unescape(ans)
         if len(ques) < 1024:
             embed.add_field(
                 name="Question",
