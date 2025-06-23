@@ -16,6 +16,7 @@ from dozer.context import DozerContext
 from ._utils import *
 from .. import db
 from ..db import *
+import asyncpg
 
 
 class ShortcutCategorySelect(discord.ui.Select):
@@ -228,10 +229,13 @@ class Shortcuts(Cog):
         """Migrate existing shortcuts to have default category if they don't have one"""
         try:
             async with db.Pool.acquire() as conn:
-                await conn.execute("""
-                    ALTER TABLE shortcuts
-                    ADD COLUMN IF NOT EXISTS category varchar DEFAULT 'General'
-                """)
+                try:
+                    await conn.execute("""
+                        ALTER TABLE shortcuts
+                        ADD COLUMN IF NOT EXISTS category varchar DEFAULT 'General'
+                    """)
+                except asyncpg.exceptions.DuplicateColumnError:
+                    pass
 
                 await conn.execute("""
                     UPDATE shortcuts
@@ -239,12 +243,21 @@ class Shortcuts(Cog):
                     WHERE category IS NULL
                 """)
 
-                await conn.execute("""
-                    ALTER TABLE shortcut_settings
-                    ADD COLUMN IF NOT EXISTS page_size integer DEFAULT 10
-                """)
+                try:
+                    await conn.execute("""
+                        ALTER TABLE shortcut_settings
+                        ADD COLUMN IF NOT EXISTS page_size integer DEFAULT 10
+                    """)
+                except asyncpg.exceptions.DuplicateColumnError:
+                    pass
         except Exception as e:
-            print(f"Migration error (this is normal for new installations): {e}")
+            if hasattr(self, "last_ctx") and self.last_ctx and hasattr(self.last_ctx, "send"):
+                try:
+                    await self.last_ctx.send(f":warning: Shortcut migration error: `{e}`")
+                except (AttributeError, discord.Forbidden) as send_error:
+                    print(f"Failed to send migration error message: {send_error}")
+            else:
+                print(f"Migration error: {e}")
 
     """Commands for managing shortcuts/macros."""
     @guild_only()
@@ -317,9 +330,6 @@ class Shortcuts(Cog):
             raise BadArgument(f"command names can only be up to {self.MAX_LEN} chars long")
         if not cmd_msg:
             raise BadArgument("can't have null message")
-
-        if len(category) > 50:
-            raise BadArgument("Category names must be 50 characters or less.")
 
         if not category.replace(" ", "").replace("-", "").replace("_", "").isalnum():
             raise BadArgument("Category names can only contain letters, numbers, spaces, hyphens, and underscores.")
@@ -409,9 +419,6 @@ class Shortcuts(Cog):
     async def move(self, ctx, cmd_name: str, category: str):
         """Move a shortcut to a different category."""
 
-        if len(category) > 50:
-            raise BadArgument("Category names must be 50 characters or less.")
-
         if not category.replace(" ", "").replace("-", "").replace("_", "").isalnum():
             raise BadArgument("Category names can only contain letters, numbers, spaces, hyphens, and underscores.")
 
@@ -423,7 +430,7 @@ class Shortcuts(Cog):
                 available = ", ".join([f"`{e.name}`" for e in all_ents[:10]])
                 if len(all_ents) > 10:
                     available += f" and {len(all_ents) - 10} more..."
-                await ctx.send(f"No shortcut named '{cmd_name}' found!\nAvailable shortcuts: {available}")
+                await ctx.send(f"No shortcut named '{cmd_name}' found!")
             else:
                 await ctx.send(f"No shortcut named '{cmd_name}' found! This server has no shortcuts.")
             return
@@ -450,8 +457,15 @@ class Shortcuts(Cog):
     `{prefix}shortcuts movecategory joke Humor` - moves the 'joke' shortcut to the 'Humor' category
     """
 
+
     @guild_only()
     @shortcuts.command()
+    @group(invoke_without_command=False)
+    async def category(self, ctx: DozerContext):
+        return
+    
+    @guild_only()
+    @category.command()
     async def categories(self, ctx: DozerContext):
         """List all shortcut categories for this server."""
         ents: List[ShortcutEntry] = await ShortcutEntry.get_by(guild_id=ctx.guild.id)
@@ -486,8 +500,8 @@ class Shortcuts(Cog):
 
     @guild_only()
     @has_permissions(manage_messages=True)
-    @shortcuts.command()
-    async def addcategory(self, ctx, category_name: str, *, description: str = None):
+    @category.command()
+    async def add(self, ctx, category_name: str, *, description: str = None):
         """Create a new category. Categories are created automatically when shortcuts are added to them."""
         ents: List[ShortcutEntry] = await ShortcutEntry.get_by(guild_id=ctx.guild.id)
         existing_categories = set(ent.category or "General" for ent in ents)
@@ -495,10 +509,6 @@ class Shortcuts(Cog):
         if category_name in existing_categories:
             await ctx.send(f"Category '{category_name}' already exists!")
             return
-
-    
-        if len(category_name) > 50:
-            raise BadArgument("Category names must be 50 characters or less.")
 
         if not category_name.replace(" ", "").replace("-", "").replace("_", "").isalnum():
             raise BadArgument("Category names can only contain letters, numbers, spaces, hyphens, and underscores.")
@@ -514,15 +524,15 @@ class Shortcuts(Cog):
 
         await ctx.send(embed=embed)
 
-    addcategory.example_usage = """
+    add.example_usage = """
     `{prefix}shortcuts addcategory Fun` - prepares the 'Fun' category for use
     `{prefix}shortcuts addcategory Moderation Commands for moderators` - creates category with description
     """
 
     @guild_only()
     @has_permissions(manage_messages=True)
-    @shortcuts.command()
-    async def deletecategory(self, ctx, category_name: str, *, confirm: str = None):
+    @category.command()
+    async def delete(self, ctx, category_name: str, *, confirm: str = None):
         """Delete a category and optionally move its shortcuts to another category."""
         if category_name.lower() == "general":
             raise BadArgument("Cannot delete the 'General' category.")
@@ -540,12 +550,6 @@ class Shortcuts(Cog):
                            f"To confirm, run:\n`{ctx.prefix}shortcuts deletecategory {category_name} CONFIRM`",
                 color=discord.Color.orange()
             )
-            embed.add_field(
-                name="Shortcuts that will be moved:",
-                value=", ".join([f"`{ent.name}`" for ent in ents[:10]]) +
-                      (f" and {len(ents) - 10} more..." if len(ents) > 10 else ""),
-                inline=False
-            )
             await ctx.send(embed=embed)
             return
 
@@ -562,7 +566,7 @@ class Shortcuts(Cog):
         )
         await ctx.send(embed=embed)
 
-    deletecategory.example_usage = """
+    delete.example_usage = """
     `{prefix}shortcuts deletecategory Fun` - shows confirmation prompt
     `{prefix}shortcuts deletecategory Fun CONFIRM` - deletes the Fun category and moves shortcuts to General
     """
@@ -586,6 +590,9 @@ class Shortcuts(Cog):
             filtered = [cat for cat in categories if current.lower() in cat.lower()][:25]  # Discord limit
 
             return [app_commands.Choice(name=cat, value=cat) for cat in filtered]
+        except AttributeError:
+            print("category_autocomplete: AttributeError encountered")
+            return []
         except Exception:
             return []
 
@@ -634,94 +641,6 @@ class Shortcuts(Cog):
     csv.example_usage = """
         `{prefix}shortcuts csv - exports all shortcuts as a csv
         """
-
-
-    @guild_only()
-    @has_permissions(manage_messages=True)
-    @shortcuts.command()
-    async def bulk_delete(self, ctx, category: str = None, *, confirm: str = None):
-        """Delete multiple shortcuts at once, optionally filtering by category."""
-        if category and category.lower() == "all" and confirm != "CONFIRM":
-            embed = discord.Embed(
-                title="⚠️ Bulk Delete Confirmation",
-                description="This will delete **ALL** shortcuts in this server.\n\n"
-                           f"To confirm, run:\n`{ctx.prefix}shortcuts bulk_delete all CONFIRM`",
-                color=discord.Color.orange()
-            )
-            await ctx.send(embed=embed)
-            return
-            
-        if category and category.lower() != "all" and confirm != "CONFIRM":
-            embed = discord.Embed(
-                title="⚠️ Bulk Delete Confirmation",
-                description=f"This will delete **ALL** shortcuts in the '{category}' category.\n\n"
-                           f"To confirm, run:\n`{ctx.prefix}shortcuts bulk_delete {category} CONFIRM`",
-                color=discord.Color.orange()
-            )
-            await ctx.send(embed=embed)
-            return
-            
-        if not category and confirm != "CONFIRM":
-            ents: List[ShortcutEntry] = await ShortcutEntry.get_by(guild_id=ctx.guild.id)
-            if not ents:
-                await ctx.send("No shortcuts for this server!")
-                return
-                
-            categories = list(set(ent.category or "General" for ent in ents))
-            categories.sort()
-            
-            embed = discord.Embed(
-                title="Bulk Delete - Select Category",
-                description="Please specify a category to delete shortcuts from, or use 'all' to delete all shortcuts.\n\n"
-                           f"Example: `{ctx.prefix}shortcuts bulk_delete Fun CONFIRM`\n"
-                           f"Or: `{ctx.prefix}shortcuts bulk_delete all CONFIRM`",
-                color=discord.Color.blue()
-            )
-            
-            categories_text = "\n".join([f"• {cat}" for cat in categories])
-            embed.add_field(name="Available Categories", value=categories_text, inline=False)
-            
-            await ctx.send(embed=embed)
-            return
-            
-        if category and category.lower() == "all" and confirm == "CONFIRM":
-            count = await ShortcutEntry.delete_all(guild_id=ctx.guild.id)
-            self.cache.invalidate_by_guild(ctx.guild.id)
-            
-            embed = discord.Embed(
-                title="✅ Bulk Delete Complete",
-                description=f"Deleted {count} shortcuts from all categories.",
-                color=discord.Color.green()
-            )
-            await ctx.send(embed=embed)
-            return
-            
-        if category and confirm == "CONFIRM":
-            ents: List[ShortcutEntry] = await ShortcutEntry.get_by(guild_id=ctx.guild.id, category=category)
-            
-            if not ents:
-                await ctx.send(f"No shortcuts found in category '{category}'.")
-                return
-                
-            count = 0
-            for ent in ents:
-                await ShortcutEntry.delete(guild_id=ctx.guild.id, name=ent.name)
-                self.cache.invalidate_entry(guild_id=ctx.guild.id, name=ent.name)
-                count += 1
-                
-            embed = discord.Embed(
-                title="✅ Bulk Delete Complete",
-                description=f"Deleted {count} shortcuts from the '{category}' category.",
-                color=discord.Color.green()
-            )
-            await ctx.send(embed=embed)
-
-    bulk_delete.example_usage = """
-    `{prefix}shortcuts bulk_delete` - Shows available categories to delete
-    `{prefix}shortcuts bulk_delete Fun` - Shows confirmation to delete all shortcuts in Fun category
-    `{prefix}shortcuts bulk_delete Fun CONFIRM` - Deletes all shortcuts in Fun category
-    `{prefix}shortcuts bulk_delete all CONFIRM` - Deletes ALL shortcuts in the server
-    """
 
     @guild_only()
     @has_permissions(manage_messages=True)
@@ -807,7 +726,7 @@ class Shortcuts(Cog):
             return
             
         attachment = ctx.message.attachments[0]
-        if not attachment.filename.endswith('.csv'):
+        if not attachment.filename.lower().endswith('.csv'):
             await ctx.send("Please attach a CSV file (must have .csv extension).")
             return
             
@@ -876,6 +795,12 @@ class Shortcuts(Cog):
         for row_num, row in enumerate(reader, 1 if has_headers else 0):
             try:
                 await self._process_csv_row(row, row_num, column_info, settings, results, ctx.guild.id)
+            except ValueError as e:
+                results["errors"].append(f"Row {row_num + 1}: Value error - {str(e)}")
+                results["skipped"] += 1
+            except IndexError as e:
+                results["errors"].append(f"Row {row_num + 1}: Index error - {str(e)}")
+                results["skipped"] += 1
             except Exception as e:
                 results["errors"].append(f"Row {row_num + 1}: Error - {str(e)}")
                 results["skipped"] += 1
@@ -957,10 +882,8 @@ class Shortcuts(Cog):
             results["skipped"] += 1
             return
             
-        # Validate category
-        if len(category) > 50:
-            results["errors"].append(f"Row {row_num + 1}: Category name too long (max 50 chars)")
-            category = "General"  # Default to General if too long
+        results["errors"].append(f"Row {row_num + 1}: Category name too long (max 50 chars)")
+        category = "General"  # Default to General if too long
             
         if not category.replace(" ", "").replace("-", "").replace("_", "").isalnum():
             results["errors"].append(f"Row {row_num + 1}: Invalid category name (only letters, numbers, spaces, hyphens, underscores)")
