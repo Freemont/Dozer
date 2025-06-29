@@ -22,6 +22,7 @@ MEDIA_CHANNEL_ID = 676583549561995274
 PUBLIC_CHANNEL_IDS = [320719178132881408, 676583549561995274, 771188718198456321]
 # media, robot-showcase
 EMBED_ONLY_CHANNEL_IDS = [676583549561995274, 771188718198456321]
+THREAD_MESSAGE_REMOVE_CHANNEL_IDS = [674081079761829898]
 
 class Hacks(Cog):
 
@@ -110,6 +111,12 @@ _Please set your nickname with `%nick NAME - TEAM#` in #bot-spam to reflect your
         if member:
             await member.send("🛌 **GO TO SLEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEP** 🛌")
 
-
+    @Cog.listener
+    async def on_thread_create(self, thread):
+        if thread.parent.id in THREAD_MESSAGE_REMOVE_CHANNEL_IDS:
+            message = thread.message
+            if (message.type == MessageType.thread_created and message.thread and message.thread.id == thread.id):
+                await message.delete()
+                
 async def setup(bot):
     await bot.add_cog(Hacks(bot))
