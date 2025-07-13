@@ -111,7 +111,7 @@ _Please set your nickname with `%nick NAME - TEAM#` in #bot-spam to reflect your
         if member:
             await member.send("🛌 **GO TO SLEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEP** 🛌")
 
-    @Cog.listener
+    @Cog.listener()
     async def on_thread_create(self, thread):
         if thread.parent.id in THREAD_MESSAGE_REMOVE_CHANNEL_IDS:
             message = thread.message
