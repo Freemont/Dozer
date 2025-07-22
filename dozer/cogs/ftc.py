@@ -281,7 +281,7 @@ class FTCInfo(Cog):
             e.set_footer(
                 text="Team information from FTC-Events.")
 
-            await ctx.send(embed=e)
+            await ctx.send(embed=e, ephemeral=True)
 
     
     @ftc.command(aliases=["teamsearch", "ftcsearch", "search"])
@@ -329,7 +329,7 @@ class FTCInfo(Cog):
         if manyteams:
             e.description = "More than 5 teams were found. If the team you want is not in this list, please refine your search"
         e.set_footer(text="Team information from FTCScout")
-        message = await ctx.reply(embed = e, view = view, mention_author = False)
+        message = await ctx.reply(embed = e, view = view, mention_author = False, ephemeral=True)
 
         await asyncio.sleep(180)  # 3 minutes
         for item in view.children:
@@ -401,7 +401,7 @@ class FTCInfo(Cog):
                 text="Team information from FTC-Events. "
                      "OPR data from FTCScout.")
 
-            await ctx.send(embed=e)
+            await ctx.send(embed=e, ephemeral=True)
 
     team.example_usage = """
     `{prefix}ftc team 7244` - show information on team 7244, Out of the Box Robotics
