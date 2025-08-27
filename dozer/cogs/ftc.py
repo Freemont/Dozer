@@ -254,11 +254,11 @@ class FTCInfo(Cog):
         res = await self.ftcevents.req("teams?" + urlencode({'teamNumber': str(team_num)}))
         async with res:
             if res.status == 400:
-                await ctx.send(f"Team {team_num} either did not compete this season, or it does not exist!")
+                await ctx.send(f"Team {team_num} either did not compete this season, or it does not exist!", ephemeral=True)
                 return
             team_data = await res.json(content_type=None)
             if not team_data:
-                await ctx.send(f"FTC-Events returned nothing on request with HTTP response code {res.status}.")
+                await ctx.send(f"FTC-Events returned nothing on request with HTTP response code {res.status}.", ephemeral=True)
                 return
             team_data = team_data['teams'][0]
 
@@ -293,12 +293,12 @@ class FTCInfo(Cog):
             await self.team.callback(self, ctx, int(team_name))
             return
         if len(team_name) < 3:
-            await ctx.send("Please provide a longer team name to search for.")
+            await ctx.send("Please provide a longer team name to search for.", ephemeral=True)
             return
         res = await self.scparser.req(f"teams/search?limit=5&searchText={urlquote(team_name)}")
         async with res:
             if res.status == 404:
-                await ctx.send("No teams found with that name!")
+                await ctx.send("No teams found with that name!", ephemeral=True)
                 return
             team_data = await res.json(content_type=None)
             if len(team_data) == 1:
@@ -309,7 +309,7 @@ class FTCInfo(Cog):
                 team_data = team_data[:5]
                 manyteams = True
             if not team_data:
-                await ctx.send(f"FTCScout returned nothing on request with HTTP response code {res.status}.")
+                await ctx.send(f"FTCScout returned nothing on request with HTTP response code {res.status}.", ephemeral=True)
                 return
 
             e = discord.Embed(color=embed_color, title=f"FTC Team Search: {team_name}")
@@ -355,17 +355,17 @@ class FTCInfo(Cog):
     async def opr(self, ctx: DozerContext, team_num: int):
         """Get information with OPR on an FTC team by number."""
         if team_num < 1:
-            await ctx.send("Invalid team number specified!")
+            await ctx.send("Invalid team number specified!", ephemeral=True)
             return
         res = await self.ftcevents.req("teams?" + urlencode({'teamNumber': str(team_num)}))
         sres = await self.scparser.req(f"teams/{team_num}/quick-stats")
         async with res, sres:
             if res.status == 400:
-                await ctx.send(f"Team {team_num} either did not compete this season, or it does not exist!")
+                await ctx.send(f"Team {team_num} either did not compete this season, or it does not exist!", ephemeral=True)
                 return
             team_data = await res.json(content_type=None)
             if not team_data:
-                await ctx.send(f"FTC-Events returned nothing on request with HTTP response code {res.status}.")
+                await ctx.send(f"FTC-Events returned nothing on request with HTTP response code {res.status}.", ephemeral=True)
                 return
             team_data = team_data['teams'][0]
 
