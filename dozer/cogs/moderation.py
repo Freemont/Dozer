@@ -490,6 +490,17 @@ class Moderation(Cog):
 
     @command()
     @has_permissions(manage_messages=True)
+    async def fixperms(self, ctx: DozerContext, member: discord.Member):
+        """Forcibly unmutes and undeafens a member in all channels"""
+        async with ctx.typing():
+            await self.perm_override(member=member, read_messages=None, send_messages=None, add_reactions=None, speak=None, stream=None,
+                                     create_public_threads=None, create_private_threads=None, send_messages_in_threads=None)
+
+            await ctx.reply("Forcibly overwrote perms")
+
+
+    @command()
+    @has_permissions(manage_messages=True)
     async def warn(self, ctx: DozerContext, member: discord.Member, *, reason: str):
         """Sends a message to the mod log specifying the member has been warned without punishment."""
         orig_channel = ctx.interaction.followup if ctx.interaction else ctx.channel
