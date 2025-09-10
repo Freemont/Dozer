@@ -188,11 +188,12 @@ class ScoutParser:
     """
     A class to make async requests to FTCScout.
     """
-    bases = ["https://api.ftcscout.org/rest/v1/","https://api.ftcscout.j5155.page/rest/v1/"]
 
-    def __init__(self, aiohttp_session, ratelimit: bool = True):
+    def __init__(self, aiohttp_session, base_url: str = "https://api.ftcscout.org/rest/v1/",
+                 ratelimit: bool = True):
         self.last_req = datetime.now()
         self.ratelimit = ratelimit
+        self.base = base_url
         self.http = aiohttp_session
         self.headers = {
             'Content-Type': 'application/json'
@@ -212,15 +213,8 @@ class ScoutParser:
         while True:
             try:
                 async with async_timeout.timeout(5) as _:
-                    tasks: set[asyncio.Task] = set()
-                    for url in self.bases:
-                        task = asyncio.create_task(self.http.get(urljoin(url, endpoint),
-                                      headers=self.headers))
-                        tasks.add(task)
-                    # race all of the requests
-                    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-                    # return the first to complete
-                    return await done.pop()
+                    return await self.http.get(urljoin(self.base, endpoint),
+                                               headers=self.headers)
             except aiohttp.ClientError:
                 tries += 1
                 if tries > 3:
